@@ -2,19 +2,28 @@ import { AbstractHttpAdapter } from '@nestjs/core';
 import * as http from 'node:http';
 import * as https from 'node:https';
 import { Context, Hono, HonoRequest, Next } from 'hono';
-import { NestApplicationOptions } from '@nestjs/common';
+import {
+  NestApplicationOptions,
+  RequestMethod,
+  VersioningOptions,
+} from '@nestjs/common';
 import { createAdaptorServer } from '@hono/node-server';
 import { Server } from 'node:net';
 import { Http2SecureServer, Http2Server } from 'http2';
-import { bodyLimit as honoBodyLimit } from 'hono/body-limit';
-import { RequestHandler } from '@nestjs/common/interfaces';
-// TODO check if these imports exists
+import { bodyLimit } from 'hono/body-limit';
 import {
-  RedirectStatusCode,
-  StatusCode,
-} from 'hono/dist/types/utils/http-status.js';
+  ErrorHandler,
+  RequestHandler,
+  VersionValue,
+} from '@nestjs/common/interfaces';
+import { RedirectStatusCode, StatusCode } from 'hono/utils/http-status';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 import { cors } from 'hono/cors';
+import {
+  serveStatic,
+  ServeStaticOptions,
+} from '@hono/node-server/serve-static';
+import { HandlerInterface } from 'hono/dist/types/types.js';
 
 type HonoHandler = RequestHandler<HonoRequest, Context>;
 type ServerType = Server | Http2Server | Http2SecureServer;
@@ -50,7 +59,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
     _rawBody?: boolean,
   ): void {
     this.instance.use(
-      honoBodyLimit({
+      bodyLimit({
         maxSize: 100 * 1024,
       }),
     );
@@ -209,6 +218,61 @@ export class HonoAdapter extends AbstractHttpAdapter<
     this.instance.use(cors(options));
   }
 
+  override async close(): Promise<void> {
+    return new Promise((resolve) => this.httpServer.close(() => resolve()));
+  }
+
+  override useStaticAssets(path: string, options: ServeStaticOptions) {
+    this.instance.use(path, serveStatic(options));
+  }
+
+  override setViewEngine(): void {
+    // TODO
+    throw new Error('Method not implemented');
+  }
+
+  override render(): void {
+    // TODO
+    throw new Error('Method not implemented');
+  }
+
+  override setErrorHandler(handler: ErrorHandler) {
+    this.instance.onError(async (err: Error, ctx: Context) => {
+      await handler(err, ctx.req, ctx);
+      return this.#send(ctx);
+    });
+  }
+
+  override setNotFoundHandler(handler: RequestHandler) {
+    this.instance.notFound(async (c: Context) => {
+      await handler(c.req, c);
+      return this.#send(c);
+    });
+  }
+
+  #map = new Map<RequestMethod, () => HandlerInterface>()
+    .set(RequestMethod.ALL, () => this.instance.all)
+    .set(RequestMethod.DELETE, () => this.instance.delete)
+    .set(RequestMethod.GET, () => this.instance.get)
+    .set(RequestMethod.OPTIONS, () => this.instance.options)
+    .set(RequestMethod.PATCH, () => this.instance.patch)
+    .set(RequestMethod.POST, () => this.instance.post)
+    .set(RequestMethod.PUT, () => this.instance.put);
+
+  override createMiddlewareFactory(requestMethod: RequestMethod) {
+    const method = this.#map.get(requestMethod);
+    return (method?.() || this.instance.use).bind(this.instance);
+  }
+
+  override applyVersionFilter(
+    handler: Function,
+    version: VersionValue,
+    versioningOptions: VersioningOptions,
+  ): (req: HonoRequest, res: Context, next: () => void) => Function {
+    // TODO
+    throw new Error('Method not implemented');
+  }
+
   #getPathAndHandler(
     pathOrHandler: string | HonoHandler,
     handler?: HonoHandler,
@@ -225,9 +289,21 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
   #getHandler(handler: HonoHandler) {
     return async (c: Context, next: Next) => {
-      await handler(c.req, c, next);
-      const body = c.get('body');
-      return typeof body === 'string' || !body ? c.text(body) : c.json(body);
+      await handler(
+        Object.assign(c.req, {
+          query: c.req.query(),
+          params: c.req.param(),
+          headers: c.req.header(),
+        }),
+        c,
+        next,
+      );
+      return this.#send(c);
     };
+  }
+
+  #send(c: Context) {
+    const body = c.get('body');
+    return typeof body === 'string' || !body ? c.text(body) : c.json(body);
   }
 }

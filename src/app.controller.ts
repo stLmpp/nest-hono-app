@@ -9,6 +9,8 @@ import {
   Put,
   Headers,
   Ip,
+  Query,
+  Param,
 } from '@nestjs/common';
 import { ParamIntSchema, ZBody, ZParams, ZQuery, ZRes } from '@st-api/core';
 import { z } from 'zod';
@@ -44,7 +46,7 @@ export class AppController {
   @ZRes(ResponseSchema)
   @Get('/:id')
   async get(
-    @ZParams(ParamsSchema) params: ParamsType,
+    @Param() params: ParamsType,
     @ZQuery(QuerySchema) query: QueryType,
     @Headers() headers: Record<string, unknown>,
     @Ip() ip: string,
